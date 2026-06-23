@@ -47,16 +47,13 @@ class MPPIController(Node):
         self.num_samples = 500    # Số quỹ đạo mẫu ngẫu nhiên
 
         # Độ lệch chuẩn nhiễu Gauss: [tốc độ m/s, góc lái rad]
-        # noise steer nhỏ → rollout bám sát nominal → bám đường chặt hơn
-        self.noise_sigma = np.array([0.5, 0.15])
+        # noise steer lớn hơn (0.15 -> 0.25) để né tránh chướng ngại vật khẩn cấp tốt hơn
+        self.noise_sigma = np.array([0.5, 0.25])
 
-        # Temperature λ: phải TƯƠNG XỨNG với cost scale
-        # Cost sau normalize / T: range ≈ -150 → +200 → lambda_ = 3.0
-        self.lambda_ = 3.0
+        # Temperature λ: tương thích với cost scale sau chuẩn hóa
+        self.lambda_ = 50.0
 
         # ── Giới hạn cơ giới ─────────────────────────────────────────
-        # F1tenth sim hỗ trợ tốc độ cao hơn 1.5 m/s
-        # Xe thực tế chạy ổn ở 2-3 m/s → tăng limit phù hợp
         self.max_speed = 2.0
         self.min_speed = 0.0
         self.max_steer = 0.35   # ~20 độ
@@ -64,7 +61,7 @@ class MPPIController(Node):
         self.w_track    = 40.0  # Bám đường raceline chặt
         self.w_progress = 15.0  # Tiến dọc đường đua
         self.w_control  = 1.5   # Làm mịn lệnh điều khiển
-        self.w_obstacle = 500.0 # Tránh vật cản (va chạm cực nặng)
+        self.w_obstacle = 100.0 # Tránh vật cản (va chạm chuẩn hóa)
         self.w_speed    = 15.0  # Bám vận tốc mục tiêu
         self.w_heading  = 15.0  # Bám hướng tiếp tuyến
 
@@ -197,15 +194,29 @@ class MPPIController(Node):
         r   = ranges[valid]
         phi = angles[valid]
 
-        # ── SUBSAMPLE xuống tối đa MAX_OBS điểm ────────────────────────
-        # Ma trận 4D (N=500, T=25, M, 2): M=80 → ~20MB, M=500 → ~125MB
-        # Mục tiêu: loop < 50ms thay vì 500ms
-        # Dùng uniform stride — đơn giản và tái tạo hình học đều đặn nhất
+        # ── SUBSAMPLE ưu tiên khoảng cách gần (Distance-Priority Subsampling) ──
+        # Giữ lại các điểm cực gần (< 2m) để tránh lọt chướng ngại vật nhỏ, subsample các điểm ở xa
+        NEAR_THRESHOLD = 2.0
         MAX_OBS = 80
-        if len(r) > MAX_OBS:
-            step = len(r) // MAX_OBS
-            r   = r[::step][:MAX_OBS]
-            phi = phi[::step][:MAX_OBS]
+
+        near_mask = r < NEAR_THRESHOLD
+        r_near, phi_near = r[near_mask], phi[near_mask]
+        r_far, phi_far = r[~near_mask], phi[~near_mask]
+
+        remaining = max(0, MAX_OBS - len(r_near))
+        if len(r_far) > remaining > 0:
+            step = len(r_far) // remaining
+            r_far = r_far[::step][:remaining]
+            phi_far = phi_far[::step][:remaining]
+        elif len(r_near) > MAX_OBS:
+            step = len(r_near) // MAX_OBS
+            r_near = r_near[::step][:MAX_OBS]
+            phi_near = phi_near[::step][:MAX_OBS]
+            r_far = np.zeros(0)
+            phi_far = np.zeros(0)
+
+        r = np.concatenate([r_near, r_far])
+        phi = np.concatenate([phi_near, phi_far])
 
         # Tọa độ trong base_link
         x_car = r * np.cos(phi)
@@ -261,9 +272,9 @@ class MPPIController(Node):
     # ─────────────────────────────────────────────────────────────────
 
     def _local_waypoints(self, x: float, y: float):
-        """Trả về (wp_window điểm waypoint gần nhất, headings tương ứng)."""
+        """Trả về (wps, headings, global_indices)."""
         if self.waypoints.shape[0] == 0:
-            return self.waypoints, np.zeros(0)
+            return self.waypoints, np.zeros(0), np.zeros(0, dtype=int)
         dx      = self.waypoints[:, 0] - x
         dy      = self.waypoints[:, 1] - y
         nearest = int(np.argmin(dx * dx + dy * dy))
@@ -271,7 +282,7 @@ class MPPIController(Node):
         # Bắt đầu cửa sổ từ 15 điểm phía sau đến wp_window-15 điểm phía trước để hỗ trợ
         # xe đi lùi hoặc lệch phía sau nearest waypoint mà vẫn tính toán đúng tiến trình/hướng.
         idx     = (np.arange(-15, self.wp_window - 15) + nearest) % n
-        return self.waypoints[idx], self.waypoint_headings[idx]
+        return self.waypoints[idx], self.waypoint_headings[idx], idx
 
     # ─────────────────────────────────────────────────────────────────
     # Hàm chi phí đa mục tiêu (vectorized)
@@ -296,7 +307,7 @@ class MPPIController(Node):
         ths = state_rollouts[:, 1:, 2]    # (N, T) — yaw
 
         # Lấy waypoints + headings cục bộ
-        local_wps, local_hdgs = self._local_waypoints(pos[0], pos[1])
+        local_wps, local_hdgs, local_indices = self._local_waypoints(pos[0], pos[1])
         W = local_wps.shape[0]
         if W == 0:
             return np.full(N, 1e6)
@@ -313,14 +324,22 @@ class MPPIController(Node):
         # ── 1. Cross-track cost (bình phương khoảng cách ngang) ─────
         track_cost = np.sum(min_dists ** 2, axis=1) / T                # (N,) chuẩn hóa
 
-        # ── 2. Progress reward (tiến dọc theo đường đua) ────────────
+        # ── 2. Progress reward (tiến dọc theo đường đua - BUG-B Modular Progress) ──
         # Tìm index wp gần nhất tại bước t=0 (vị trí hiện tại)
         dx0   = local_wps[:, 0] - pos[0]
         dy0   = local_wps[:, 1] - pos[1]
         idx0  = int(np.argmin(dx0 * dx0 + dy0 * dy0))
-        # Tại mỗi bước t, rollout đang gần wp nào (index trong window)
-        # progress = chênh lệch index (không modulo W để cho phép số âm khi đi lùi)
-        progress_raw   = min_wi - idx0                      # (N,T)
+        
+        # Lấy chỉ số toàn cục (global indices) để tính chênh lệch tiến trình vòng tròn chính xác
+        rollout_global_wps = local_indices[min_wi]                     # (N, T)
+        nearest_global_idx = local_indices[idx0]                       # int
+        num_wps = self.waypoints.shape[0]
+        progress_raw = (rollout_global_wps - nearest_global_idx) % num_wps
+        
+        # Chuyển sang hiệu số có dấu để đi lùi bị tính là tiến trình âm
+        backwards_mask = progress_raw > (num_wps // 2)
+        progress_raw[backwards_mask] -= num_wps
+        
         # Chuẩn hóa về [0, 1], thưởng nếu tiến xa hơn
         progress_mean  = progress_raw.astype(float).mean(axis=1)  # (N,)
         # Đây là REWARD nên cost = -progress, dùng âm để minimize
@@ -342,7 +361,7 @@ class MPPIController(Node):
         ctrl_diff   = np.diff(perturbed_controls, axis=1)
         smooth_cost = np.sum(ctrl_diff ** 2, axis=(1, 2)) / T      # (N,)
 
-        # ── 6. Obstacle cost (BINARY + Gaussian falloff) ────────────
+        # ── 6. Obstacle cost (chuẩn hóa về [0, 2.0] tránh Softmax Collapse) ──
         obs_cost       = np.zeros(N)
         n_obs_filtered = 0
         
@@ -377,15 +396,39 @@ class MPPIController(Node):
                 collision = (dists < self.robot_radius).any(axis=2)           # (N,T)
                 col_cost  = collision.sum(axis=1).astype(float)               # (N,)
                 
-                # Phạt cực nặng nếu va chạm bất kỳ bước nào trong horizon
+                # Phạt nếu va chạm bất kỳ bước nào trong horizon
                 collision_any = collision.any(axis=1).astype(float)          # (N,)
                 
                 sigma     = (self.danger_radius - self.robot_radius) / 2.0
                 gauss     = np.exp(-0.5 * ((dists - self.robot_radius) / sigma) ** 2)
                 soft      = np.sum(gauss * (dists < self.danger_radius) * (dists >= self.robot_radius), axis=(1, 2))
                 
-                # obs_cost kết hợp: phạt va chạm nhị phân (100.0) + số bước va chạm (10.0) + soft cost (0.1)
-                obs_cost  = collision_any * 100.0 + col_cost * 10.0 + 0.1 * soft
+                # Chuẩn hóa obs_cost về [0, 2.0]
+                obs_cost = np.clip(
+                    collision_any * 1.0 +
+                    (col_cost / T) * 0.5 +
+                    soft / (n_obs_filtered * T + 1e-6) * 0.3,
+                    0.0, 2.0
+                )
+
+        # ── 7. Terminal cost (tập trung tại bước cuối cùng t=T - BUG-F) ──
+        final_pts = state_rollouts[:, -1, :2]   # (N, 2)
+        
+        # Phạt lệch đường cuối horizon
+        dx_f = final_pts[:, 0:1] - local_wps[None, :, 0]
+        dy_f = final_pts[:, 1:2] - local_wps[None, :, 1]
+        dist_f = np.sqrt(dx_f**2 + dy_f**2)
+        min_f = dist_f.min(axis=1)             # (N,)
+        
+        # Phạt va chạm cuối horizon
+        terminal_obs = np.zeros(N)
+        if n_obs_filtered > 0:
+            d_obs_f = np.linalg.norm(
+                final_pts[:, None, :] - local_obs[None, :, :], axis=-1
+            ).min(axis=1)                      # (N,)
+            terminal_obs = (d_obs_f < self.danger_radius).astype(float)
+            
+        terminal_cost = 3.0 * (self.w_track * min_f**2 + self.w_obstacle * terminal_obs)
 
         # ── Lưu thống kê log ─────────────────────────────────────────
         self._dbg_track    = float(np.mean(self.w_track    * track_cost))
@@ -411,7 +454,8 @@ class MPPIController(Node):
             self.w_control  * smooth_cost   +
             self.w_speed    * speed_cost    +
             self.w_heading  * heading_cost  +
-            self.w_obstacle * obs_cost
+            self.w_obstacle * obs_cost      +
+            terminal_cost
         )
 
     # ─────────────────────────────────────────────────────────────────
@@ -539,9 +583,9 @@ class MPPIController(Node):
         noise = np.random.normal(0.0, self.noise_sigma,
                                  (self.num_samples, self.horizon, 2))
 
-        # 3. Chuỗi điều khiển nhiễu với clip biên cơ giới (dùng dynamic_min_speed)
+        # 3. Chuỗi điều khiển nhiễu với clip biên cơ giới (cho phép explore đến max_speed - LOGIC-D)
         perturbed = self.nominal_control[None, :, :] + noise
-        perturbed[:, :, 0] = np.clip(perturbed[:, :, 0], dynamic_min_speed, current_target_speed)
+        perturbed[:, :, 0] = np.clip(perturbed[:, :, 0], dynamic_min_speed, self.max_speed)
         perturbed[:, :, 1] = np.clip(perturbed[:, :, 1], -self.max_steer, self.max_steer)
 
         # effective_noise: nhiễu thực sự được áp dụng sau khi clip (BUG-4)
@@ -560,7 +604,12 @@ class MPPIController(Node):
         # 6. Cập nhật phân phối MPPI (Williams et al. 2018)
         # Trick ổn định số: trừ min_cost trước khi exp để tránh underflow
         beta    = float(np.min(costs))
-        weights = np.exp(-(costs - beta) / self.lambda_)
+        
+        # Adaptive Lambda (BUG-C): điều chỉnh lambda động theo standard deviation
+        cost_std = float(np.std(costs))
+        effective_lambda = max(self.lambda_, cost_std / 5.0)
+        
+        weights = np.exp(-(costs - beta) / effective_lambda)
         w_sum   = float(np.sum(weights))
         if w_sum < 1e-8:
             weights = np.ones(self.num_samples) / self.num_samples
@@ -570,8 +619,8 @@ class MPPIController(Node):
         # U ← U + Σ_i( w_i · ε_i )  — công thức chuẩn từ paper
         self.nominal_control += np.sum(weights[:, None, None] * effective_noise, axis=0)
 
-        # Clip nominal sau update (dùng dynamic_min_speed)
-        self.nominal_control[:, 0] = np.clip(self.nominal_control[:, 0], dynamic_min_speed, current_target_speed)
+        # Clip nominal sau update (cho phép explore đến max_speed)
+        self.nominal_control[:, 0] = np.clip(self.nominal_control[:, 0], dynamic_min_speed, self.max_speed)
         self.nominal_control[:, 1] = np.clip(self.nominal_control[:, 1], -self.max_steer, self.max_steer)
 
         # 7. Lấy lệnh bước đầu tiên u_0
@@ -638,7 +687,7 @@ class MPPIController(Node):
             
             log_msg = (
                 f"[MPPI] {execution_time:.0f}ms | v={v_cur:.2f} → cmd={opt_speed:.2f} steer={opt_steer:.3f} | "
-                f"n_eff={n_eff:.1f}/{self.num_samples} | cost_std={cost_std:.1f}\n"
+                f"n_eff={n_eff:.1f}/{self.num_samples} | cost_std={cost_std:.1f} | eff_lam={effective_lambda:.1f}\n"
                 f"  cost min={beta:.1f} mean={np.mean(costs):.1f} ratio={cost_ratio:.3f} | "
                 f"min_obs={min_obs_dist:.2f}m | wp=#{nearest_idx} (dist={dist_to_wp:.2f}m, err={np.degrees(current_heading_err):.1f}°)\n"
                 f"  MEAN: track={self._dbg_track:.1f} prog={self.w_progress * np.mean(self._current_progress_cost):.1f} "
