@@ -121,6 +121,7 @@ class MPPIController(Node):
 
         # ── Hysteresis State cho việc đi lùi ──────────────────────────
         self.is_reversing   = False
+        self.forward_min_obs_dist = 999.0  # Khoảng cách tới vật cản phía trước mặt
 
         # ── Thống kê cost để log ─────────────────────────────────────
         self.log_counter    = 0
@@ -197,6 +198,13 @@ class MPPIController(Node):
         valid = np.isfinite(ranges) & (ranges > 0.15) & (ranges < 4.5)
         r   = ranges[valid]
         phi = angles[valid]
+
+        # Khoảng cách tới vật cản phía trước mặt (cone -40 đến +40 độ) để kích hoạt lùi
+        forward_mask = np.abs(phi) < np.radians(40)
+        if forward_mask.any():
+            self.forward_min_obs_dist = float(np.min(r[forward_mask]))
+        else:
+            self.forward_min_obs_dist = 999.0
 
         # ── SUBSAMPLE ưu tiên khoảng cách gần (Distance-Priority Subsampling) ──
         # Giữ lại các điểm cực gần (< 2m) để tránh lọt chướng ngại vật nhỏ, subsample các điểm ở xa
@@ -496,9 +504,11 @@ class MPPIController(Node):
             dt_obs = (odom_time - self.obstacle_stamp).nanoseconds / 1e9
             if dt_obs > 0.5:
                 self.map_obstacles = np.zeros((0, 2))
+                self.forward_min_obs_dist = 999.0
                 lidar_lost = True
         else:
             self.map_obstacles = np.zeros((0, 2))
+            self.forward_min_obs_dist = 999.0
             lidar_lost = True
 
         # ── Tính khoảng cách chướng ngại vật gần nhất ────────────────
@@ -515,16 +525,16 @@ class MPPIController(Node):
 
         # ── Hysteresis State cho việc đi lùi (Tránh dao động tiến/lùi liên tục) ──
         if not self.is_reversing:
-            if min_obs_dist < 0.8:
+            if self.forward_min_obs_dist < 0.8:
                 self.is_reversing = True
                 self.get_logger().warn(
-                    f"[SAFETY] Cận kề va chạm (min_obs={min_obs_dist:.2f}m < 0.8m) -> Kích hoạt chế độ lùi tự động."
+                    f"[SAFETY] Cận kề va chạm phía trước (forward_obs={self.forward_min_obs_dist:.2f}m < 0.8m) -> Kích hoạt chế độ lùi tự động."
                 )
         else:
-            if min_obs_dist > 1.2:
+            if self.forward_min_obs_dist > 1.2:
                 self.is_reversing = False
                 self.get_logger().info(
-                    f"[SAFETY] Đã lùi ra khoảng cách an toàn (min_obs={min_obs_dist:.2f}m > 1.2m) -> Trở lại chế độ tiến."
+                    f"[SAFETY] Đã lùi ra khoảng cách an toàn phía trước (forward_obs={self.forward_min_obs_dist:.2f}m > 1.2m) -> Trở lại chế độ tiến."
                 )
 
         dynamic_min_speed = -0.8 if self.is_reversing else 0.0
