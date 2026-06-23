@@ -118,6 +118,9 @@ class MPPIController(Node):
         self._load_waypoints(csv_path)
         self._publish_waypoints()
 
+        # ── Hysteresis State cho việc đi lùi ──────────────────────────
+        self.is_reversing   = False
+
         # ── Thống kê cost để log ─────────────────────────────────────
         self.log_counter    = 0
         self._diag_done     = False   # Flag: chỉ in diagnostic 1 lần
@@ -509,8 +512,21 @@ class MPPIController(Node):
             obs_dists = np.linalg.norm(all_obs - np.array([x0, y0]), axis=1)
             min_obs_dist = float(np.min(obs_dists))
 
-        # Giới hạn lùi động: cho phép lùi xe giải vây khi xe quá sát tường (< 0.8m)
-        dynamic_min_speed = -0.8 if (min_obs_dist < 0.8) else 0.0
+        # ── Hysteresis State cho việc đi lùi (Tránh dao động tiến/lùi liên tục) ──
+        if not self.is_reversing:
+            if min_obs_dist < 0.8:
+                self.is_reversing = True
+                self.get_logger().warn(
+                    f"[SAFETY] Cận kề va chạm (min_obs={min_obs_dist:.2f}m < 0.8m) -> Kích hoạt chế độ lùi tự động."
+                )
+        else:
+            if min_obs_dist > 1.2:
+                self.is_reversing = False
+                self.get_logger().info(
+                    f"[SAFETY] Đã lùi ra khoảng cách an toàn (min_obs={min_obs_dist:.2f}m > 1.2m) -> Trở lại chế độ tiến."
+                )
+
+        dynamic_min_speed = -0.8 if self.is_reversing else 0.0
 
         # Curvature-based speed profiling
         target_speed = self.target_speed
@@ -540,6 +556,10 @@ class MPPIController(Node):
 
         # Nếu mất dữ liệu LiDAR quá 0.5s, giảm target speed để an toàn
         current_target_speed = 0.5 if lidar_lost else target_speed
+
+        # Nếu đang ở chế độ lùi, đặt tốc độ mục tiêu âm để dẫn dắt MPPI lùi mượt mà
+        if self.is_reversing:
+            current_target_speed = -0.6
 
         # ── Unstuck safety guard ─────────────────────────────────
         # Nếu xe đang dừng/chạy rất chậm nhưng đường thoáng, mà nominal control bị kẹt ở mức thấp
