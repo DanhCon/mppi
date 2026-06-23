@@ -48,13 +48,14 @@ class MPPIController(Node):
 
         # Độ lệch chuẩn nhiễu Gauss: [tốc độ m/s, góc lái rad]
         # noise steer lớn hơn (0.15 -> 0.25) để né tránh chướng ngại vật khẩn cấp tốt hơn
-        self.noise_sigma = np.array([0.5, 0.25])
+        # tăng noise speed từ 0.5 lên 0.8 để tối ưu hóa việc tăng/giảm tốc ở tốc độ cao
+        self.noise_sigma = np.array([0.8, 0.25])
 
         # Temperature λ: tương thích với cost scale sau chuẩn hóa
         self.lambda_ = 50.0
 
         # ── Giới hạn cơ giới ─────────────────────────────────────────
-        self.max_speed = 2.0
+        self.max_speed = 4.0    # Tăng giới hạn tốc độ tối đa lên 4.0 m/s để xe có thể chạy nhanh hơn
         self.min_speed = 0.0
         self.max_steer = 0.35   # ~20 độ
 
@@ -70,10 +71,10 @@ class MPPIController(Node):
         self.danger_radius  = 1.10  # Tăng lên 1.10m để phát hiện và phản ứng sớm hơn với chướng ngại vật
 
         # Tốc độ mục tiêu lớn nhất trên đường thẳng (m/s)
-        self.target_speed = 2.0
+        self.target_speed = 3.5  # Tăng tốc độ mục tiêu trên đường thẳng lên 3.5 m/s
 
         # ── Tham số curvature-based speed profiling ─────────────────
-        self.min_speed_curve = 1.1     # Tốc độ tối thiểu khi vào cua gắt (tăng lên 1.1 m/s để tránh quá chậm)
+        self.min_speed_curve = 1.5     # Tăng tốc độ tối thiểu khi vào cua gắt lên 1.5 m/s để duy trì động năng
         self.curve_threshold = 0.28    # Ngưỡng độ cong (rad/m) bắt đầu giảm tốc (tăng lên để bỏ qua góc cong nhỏ)
         self.lookahead_wps   = 10      # Số lượng waypoints nhìn trước để tính độ cong (giảm xuống 10 điểm ~ 13m)
 
