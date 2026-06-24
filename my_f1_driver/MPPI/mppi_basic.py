@@ -52,14 +52,14 @@ class MPPIController(Node):
 
         # Độ lệch chuẩn nhiễu Gauss: [tốc độ m/s, góc lái rad]
         # noise steer lớn hơn (0.15 -> 0.25) để né tránh chướng ngại vật khẩn cấp tốt hơn
-        # tăng noise speed từ 0.5 lên 0.8 để tối ưu hóa việc tăng/giảm tốc ở tốc độ cao
-        self.noise_sigma = np.array([0.8, 0.25])
+        # tăng noise speed để tối ưu hóa việc tăng/giảm tốc ở tốc độ cao
+        self.noise_sigma = np.array([1.0, 0.25])
 
         # Temperature λ: tương thích với cost scale sau chuẩn hóa
         self.lambda_ = 50.0
 
         # ── Giới hạn cơ giới ─────────────────────────────────────────
-        self.max_speed = 4.0    # Tăng giới hạn tốc độ tối đa lên 4.0 m/s để xe có thể chạy nhanh hơn
+        self.max_speed = 6.0    # Tăng giới hạn tốc độ tối đa lên 6.0 m/s để xe có thể chạy nhanh hơn
         self.min_speed = 0.0
         self.max_steer = 0.35   # ~20 độ
 
@@ -75,12 +75,12 @@ class MPPIController(Node):
         self.danger_radius  = 1.10  # Tăng lên 1.10m để phát hiện và phản ứng sớm hơn với chướng ngại vật
 
         # Tốc độ mục tiêu lớn nhất trên đường thẳng (m/s)
-        self.target_speed = 3.5  # Tăng tốc độ mục tiêu trên đường thẳng lên 3.5 m/s
+        self.target_speed = 5.0  # Tăng tốc độ mục tiêu trên đường thẳng lên 5.0 m/s
 
         # ── Tham số curvature-based speed profiling ─────────────────
-        self.min_speed_curve = 1.5     # Tăng tốc độ tối thiểu khi vào cua gắt lên 1.5 m/s để duy trì động năng
+        self.min_speed_curve = 1.8     # Tăng tốc độ tối thiểu khi vào cua gắt lên 1.8 m/s để duy trì động năng
         self.curve_threshold = 0.28    # Ngưỡng độ cong (rad/m) bắt đầu giảm tốc (tăng lên để bỏ qua góc cong nhỏ)
-        self.lookahead_wps   = 10      # Số lượng waypoints nhìn trước để tính độ cong (giảm xuống 10 điểm ~ 13m)
+        self.lookahead_wps   = 15      # Tăng số lượng waypoints nhìn trước lên 15 để phanh sớm trước cua từ tốc độ cao
 
         # Cửa sổ waypoint cục bộ
         self.wp_window = 50  # Tăng để có đủ waypoints nhìn trước
@@ -581,11 +581,13 @@ class MPPIController(Node):
             speed_factor = np.clip(1.0 - (max_curve / self.curve_threshold) ** 2, 0.0, 1.0)
             target_speed = self.min_speed_curve + (self.target_speed - self.min_speed_curve) * speed_factor
 
-        # Điều tiết tốc độ dựa trên khoảng cách vật cản PHÍA TRƯỚC (giảm tốc độ khi chuẩn bị va chạm, bỏ qua tường bên)
+        # Điều tiết tốc độ dựa trên khoảng cách vật cản PHÍA TRƯỚC (dynamic threshold dựa trên tốc độ hiện tại, bỏ qua tường bên)
         obs_speed_factor = 1.0
-        if self.forward_min_obs_dist < 1.5:
-            # Tuyến tính từ 1.0 (tại 1.5m) về 0.0 (tại 0.6m)
-            obs_speed_factor = np.clip((self.forward_min_obs_dist - 0.6) / 0.9, 0.0, 1.0)
+        safe_braking_dist = max(1.5, v_cur * 0.5 + 0.5)
+        min_safe_dist = 0.6
+        if self.forward_min_obs_dist < safe_braking_dist:
+            span = max(0.2, safe_braking_dist - min_safe_dist)
+            obs_speed_factor = np.clip((self.forward_min_obs_dist - min_safe_dist) / span, 0.0, 1.0)
         
         # Tốc độ an toàn tối thiểu khi tránh chướng ngại vật gắt là 0.8 m/s
         min_speed_obs = 0.8
