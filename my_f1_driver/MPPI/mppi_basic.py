@@ -63,11 +63,11 @@ class MPPIController(Node):
         self.min_speed = 0.0
         self.max_steer = 0.35   # ~20 độ
 
-        self.w_track    = 40.0  # Bám đường raceline chặt
+        self.w_track    = 80.0  # Bám đường raceline chặt (tăng từ 40 để xe bám sát vạch đường khi đi cực nhanh)
         self.w_progress = 1.5   # Tiến dọc đường đua (giảm để không lấn át cost tránh vật cản/bám cua)
         self.w_control  = 1.5   # Làm mịn lệnh điều khiển
         self.w_obstacle = 100.0 # Tránh vật cản (va chạm chuẩn hóa)
-        self.w_speed    = 15.0  # Bám vận tốc mục tiêu
+        self.w_speed    = 5.0   # Bám vận tốc mục tiêu (giảm từ 15 để ưu tiên cho sự an toàn và bám đường lên trước)
         self.w_heading  = 15.0  # Bám hướng tiếp tuyến
 
         # Bán kính an toàn của xe (m)
@@ -79,7 +79,7 @@ class MPPIController(Node):
 
         # ── Tham số curvature-based speed profiling ─────────────────
         self.min_speed_curve = 1.8     # Tăng tốc độ tối thiểu khi vào cua gắt lên 1.8 m/s để duy trì động năng
-        self.curve_threshold = 0.28    # Ngưỡng độ cong (rad/m) bắt đầu giảm tốc (tăng lên để bỏ qua góc cong nhỏ)
+        self.curve_threshold = 0.35    # Ngưỡng độ cong (rad/m) bắt đầu giảm tốc (tăng từ 0.28 lên 0.35 để cho phép cua nhanh hơn)
         self.lookahead_wps   = 15      # Tăng số lượng waypoints nhìn trước lên 15 để phanh sớm trước cua từ tốc độ cao
 
         # Cửa sổ waypoint cục bộ
@@ -288,11 +288,17 @@ class MPPIController(Node):
         x, y, th = states[:, 0], states[:, 1], states[:, 2]
         v, d     = controls[:, 0], controls[:, 1]
         dt       = self.dt
+
+        # Mô phỏng trượt (understeer) ở tốc độ cao: giảm hiệu quả đánh lái trong mô hình dự báo
+        # để bộ điều khiển MPPI tự động tăng góc lái thực tế bù vào.
+        slip_factor = 1.0 / (1.0 + v * 0.15)
+        d_eff = d * slip_factor
+
         return np.stack(
             [
                 x  + v * np.cos(th) * dt,
                 y  + v * np.sin(th) * dt,
-                th + (v * np.tan(d) / self.L) * dt,
+                th + (v * np.tan(d_eff) / self.L) * dt,
             ],
             axis=1,
         )
