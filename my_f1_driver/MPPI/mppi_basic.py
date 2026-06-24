@@ -99,6 +99,7 @@ class MPPIController(Node):
         # ── Hysteresis State cho việc đi lùi ──────────────────────────
         self.is_reversing   = False
         self.forward_min_obs_dist = 999.0  # Khoảng cách tới vật cản phía trước mặt
+        self.last_best_obs_cost = 0.0
 
         # Vận tốc dọc hiện tại (cập nhật từ odom_callback)
         self.v_cur = 0.0
@@ -527,9 +528,6 @@ class MPPIController(Node):
         v_cur  = self.v_cur
         state  = np.array([x0, y0, theta0])
 
-        # Cập nhật bán kính nguy hiểm động theo tốc độ để phát hiện và tránh vật cản sớm hơn khi đi nhanh
-        self.danger_radius = max(1.10, v_cur * 0.4 + 0.3)
-
         if self.waypoints.shape[0] == 0:
             self.get_logger().error("Khong co waypoint — phanh xe khẩn cấp.", throttle_duration_sec=2.0)
             self._publish_drive(0.0, 0.0)
@@ -593,13 +591,14 @@ class MPPIController(Node):
             speed_factor = np.clip(1.0 - (max_curve / self.curve_threshold) ** 2, 0.0, 1.0)
             target_speed = self.min_speed_curve + (self.target_speed - self.min_speed_curve) * speed_factor
 
-        # Điều tiết tốc độ dựa trên khoảng cách vật cản PHÍA TRƯỚC (dynamic threshold dựa trên tốc độ hiện tại, bỏ qua tường bên)
+        # Điều tiết tốc độ dựa trên khoảng cách vật cản PHÍA TRƯỚC (chỉ giảm tốc khi quỹ đạo trước đó phát hiện chướng ngại vật thực sự)
         obs_speed_factor = 1.0
-        safe_braking_dist = max(1.5, v_cur * 0.5 + 0.5)
-        min_safe_dist = 0.6
-        if self.forward_min_obs_dist < safe_braking_dist:
-            span = max(0.2, safe_braking_dist - min_safe_dist)
-            obs_speed_factor = np.clip((self.forward_min_obs_dist - min_safe_dist) / span, 0.0, 1.0)
+        if self.last_best_obs_cost >= 1.0:
+            safe_braking_dist = max(1.5, v_cur * 0.5 + 0.5)
+            min_safe_dist = 0.6
+            if self.forward_min_obs_dist < safe_braking_dist:
+                span = max(0.2, safe_braking_dist - min_safe_dist)
+                obs_speed_factor = np.clip((self.forward_min_obs_dist - min_safe_dist) / span, 0.0, 1.0)
         
         # Tốc độ an toàn tối thiểu khi tránh chướng ngại vật gắt là 0.8 m/s
         min_speed_obs = 0.8
@@ -612,12 +611,12 @@ class MPPIController(Node):
         if self.is_reversing:
             current_target_speed = -0.6
 
-        # ── Giới hạn tốc độ tối đa động dựa trên khoảng cách tới vật cản phía trước ──
+        # ── Giới hạn tốc độ tối đa động dựa trên khoảng cách tới vật cản phía trước và độ an toàn của quỹ đạo trước đó ──
         dynamic_max_speed = self.max_speed
-        if self.forward_min_obs_dist < 3.0:
-            # Tuyến tính giảm tốc độ tối đa từ max_speed xuống 1.0 m/s khi khoảng cách từ 3.0m xuống 0.8m
+        if self.forward_min_obs_dist < 3.0 and self.last_best_obs_cost >= 1.0:
+            # Tuyến tính giảm tốc độ tối đa từ max_speed xuống 1.2 m/s khi khoảng cách từ 3.0m xuống 0.8m
             scale = np.clip((self.forward_min_obs_dist - 0.8) / 2.2, 0.0, 1.0)
-            dynamic_max_speed = 1.0 + (self.max_speed - 1.0) * scale
+            dynamic_max_speed = 1.2 + (self.max_speed - 1.2) * scale
 
         # ── Unstuck safety guard ─────────────────────────────────
         # Nếu xe đang dừng/chạy rất chậm nhưng đường thoáng phía trước, mà nominal control bị kẹt ở mức thấp
@@ -706,6 +705,7 @@ class MPPIController(Node):
         # ── Safe Stop Guard: Phanh khẩn cấp nếu cận kề vật cản mà không tìm thấy đường đi an toàn ──
         best_idx = int(np.argmin(costs))
         best_obs_cost = self._current_obs_cost[best_idx]
+        self.last_best_obs_cost = best_obs_cost
         
         # Ngưỡng khoảng cách dừng an toàn động dựa trên vận tốc hiện tại
         stop_threshold = max(0.9, v_cur * 0.4 + 0.3)
