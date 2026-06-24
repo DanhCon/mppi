@@ -527,6 +527,9 @@ class MPPIController(Node):
         v_cur  = self.v_cur
         state  = np.array([x0, y0, theta0])
 
+        # Cập nhật bán kính nguy hiểm động theo tốc độ để phát hiện và tránh vật cản sớm hơn khi đi nhanh
+        self.danger_radius = max(1.10, v_cur * 0.4 + 0.3)
+
         if self.waypoints.shape[0] == 0:
             self.get_logger().error("Khong co waypoint — phanh xe khẩn cấp.", throttle_duration_sec=2.0)
             self._publish_drive(0.0, 0.0)
@@ -609,6 +612,13 @@ class MPPIController(Node):
         if self.is_reversing:
             current_target_speed = -0.6
 
+        # ── Giới hạn tốc độ tối đa động dựa trên khoảng cách tới vật cản phía trước ──
+        dynamic_max_speed = self.max_speed
+        if self.forward_min_obs_dist < 3.0:
+            # Tuyến tính giảm tốc độ tối đa từ max_speed xuống 1.0 m/s khi khoảng cách từ 3.0m xuống 0.8m
+            scale = np.clip((self.forward_min_obs_dist - 0.8) / 2.2, 0.0, 1.0)
+            dynamic_max_speed = 1.0 + (self.max_speed - 1.0) * scale
+
         # ── Unstuck safety guard ─────────────────────────────────
         # Nếu xe đang dừng/chạy rất chậm nhưng đường thoáng phía trước, mà nominal control bị kẹt ở mức thấp
         # → reset nominal speed về current_target_speed để kích hoạt lại xe nhanh chóng
@@ -653,7 +663,7 @@ class MPPIController(Node):
 
         # 3. Chuỗi điều khiển nhiễu với clip biên cơ giới
         perturbed = self.nominal_control[None, :, :] + noise
-        perturbed[:, :, 0] = np.clip(perturbed[:, :, 0], dynamic_min_speed, self.max_speed)
+        perturbed[:, :, 0] = np.clip(perturbed[:, :, 0], dynamic_min_speed, dynamic_max_speed)
         perturbed[:, :, 1] = np.clip(perturbed[:, :, 1], -self.max_steer, self.max_steer)
 
         # effective_noise: nhiễu thực sự được áp dụng sau khi clip (BUG-4)
@@ -686,7 +696,7 @@ class MPPIController(Node):
         self.nominal_control += np.sum(weights[:, None, None] * effective_noise, axis=0)
 
         # Clip nominal sau update
-        self.nominal_control[:, 0] = np.clip(self.nominal_control[:, 0], dynamic_min_speed, self.max_speed)
+        self.nominal_control[:, 0] = np.clip(self.nominal_control[:, 0], dynamic_min_speed, dynamic_max_speed)
         self.nominal_control[:, 1] = np.clip(self.nominal_control[:, 1], -self.max_steer, self.max_steer)
 
         # 7. Lấy lệnh bước đầu tiên u_0
