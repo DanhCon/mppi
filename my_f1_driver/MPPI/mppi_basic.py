@@ -433,15 +433,18 @@ class MPPIController(Node):
                 # Phạt nếu va chạm bất kỳ bước nào trong horizon
                 collision_any = collision.any(axis=1).astype(float)          # (N,)
                 
+                # Lấy khoảng cách vật cản gần nhất tại mỗi bước để tránh loãng chi phí (cost dilution)
+                min_dists = np.min(dists, axis=2)                            # (N, T)
                 sigma     = (self.danger_radius - self.robot_radius) / 2.0
-                gauss     = np.exp(-0.5 * ((dists - self.robot_radius) / sigma) ** 2)
-                soft      = np.sum(gauss * (dists < self.danger_radius) * (dists >= self.robot_radius), axis=(1, 2))
+                gauss     = np.exp(-0.5 * ((min_dists - self.robot_radius) / sigma) ** 2)
+                mask      = (min_dists < self.danger_radius) & (min_dists >= self.robot_radius)
+                soft_cost = np.sum(gauss * mask, axis=1) / T                 # (N,)
                 
                 # Chuẩn hóa obs_cost về [0, 10.0] để áp đảo progress reward khi va chạm xảy ra
                 obs_cost = np.clip(
                     collision_any * 5.0 +
                     (col_cost / T) * 2.0 +
-                    soft / (n_obs_filtered * T + 1e-6) * 1.0,
+                    soft_cost * 3.0,
                     0.0, 10.0
                 )
 
