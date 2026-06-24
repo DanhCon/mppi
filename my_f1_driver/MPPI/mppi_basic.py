@@ -581,11 +581,11 @@ class MPPIController(Node):
             speed_factor = np.clip(1.0 - (max_curve / self.curve_threshold) ** 2, 0.0, 1.0)
             target_speed = self.min_speed_curve + (self.target_speed - self.min_speed_curve) * speed_factor
 
-        # Điều tiết tốc độ dựa trên khoảng cách vật cản (giảm tốc độ khi chuẩn bị va chạm)
+        # Điều tiết tốc độ dựa trên khoảng cách vật cản PHÍA TRƯỚC (giảm tốc độ khi chuẩn bị va chạm, bỏ qua tường bên)
         obs_speed_factor = 1.0
-        if min_obs_dist < 1.5:
+        if self.forward_min_obs_dist < 1.5:
             # Tuyến tính từ 1.0 (tại 1.5m) về 0.0 (tại 0.6m)
-            obs_speed_factor = np.clip((min_obs_dist - 0.6) / 0.9, 0.0, 1.0)
+            obs_speed_factor = np.clip((self.forward_min_obs_dist - 0.6) / 0.9, 0.0, 1.0)
         
         # Tốc độ an toàn tối thiểu khi tránh chướng ngại vật gắt là 0.8 m/s
         min_speed_obs = 0.8
@@ -599,11 +599,11 @@ class MPPIController(Node):
             current_target_speed = -0.6
 
         # ── Unstuck safety guard ─────────────────────────────────
-        # Nếu xe đang dừng/chạy rất chậm nhưng đường thoáng, mà nominal control bị kẹt ở mức thấp
+        # Nếu xe đang dừng/chạy rất chậm nhưng đường thoáng phía trước, mà nominal control bị kẹt ở mức thấp
         # → reset nominal speed về current_target_speed để kích hoạt lại xe nhanh chóng
-        if v_cur < 0.15 and min_obs_dist > 1.5 and self.nominal_control[0, 0] < 0.5:
+        if v_cur < 0.15 and self.forward_min_obs_dist > 1.5 and self.nominal_control[0, 0] < 0.5:
             self.get_logger().warn(
-                f"[GUARD] Xe dang dung nhung duong thoang (min_obs={min_obs_dist:.2f}m) "
+                f"[GUARD] Xe dang dung nhung duong thoang (forward_obs={self.forward_min_obs_dist:.2f}m) "
                 f"→ reset nominal speed ve {current_target_speed:.2f} m/s",
                 throttle_duration_sec=1.0
             )
