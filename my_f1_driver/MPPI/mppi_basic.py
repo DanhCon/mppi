@@ -693,14 +693,18 @@ class MPPIController(Node):
         # ── Safe Stop Guard: Phanh khẩn cấp nếu cận kề vật cản mà không tìm thấy đường đi an toàn ──
         best_idx = int(np.argmin(costs))
         best_obs_cost = self._current_obs_cost[best_idx]
-        if self.forward_min_obs_dist < 0.9 and best_obs_cost >= 5.0:
+        
+        # Ngưỡng khoảng cách dừng an toàn động dựa trên vận tốc hiện tại
+        stop_threshold = max(0.9, v_cur * 0.4 + 0.3)
+        if self.forward_min_obs_dist < stop_threshold and best_obs_cost >= 5.0:
             self.get_logger().warn(
                 f"[SAFETY STOP] Cận kề vật cản và không tìm thấy đường đi an toàn! "
-                f"(forward_obs={self.forward_min_obs_dist:.2f}m, best_obs_cost={best_obs_cost:.1f}) -> Phanh dừng xe.",
+                f"(forward_obs={self.forward_min_obs_dist:.2f}m, threshold={stop_threshold:.2f}m, best_obs_cost={best_obs_cost:.1f}) -> Phanh dừng xe và kích hoạt đi lùi.",
                 throttle_duration_sec=0.2
             )
             opt_speed = 0.0
             self.nominal_control[:, 0] = 0.0
+            self.is_reversing = True
 
         # ── Receding horizon shift (warm-start) ─────────────────────
         # Dịch nominal_control 1 bước về trước
