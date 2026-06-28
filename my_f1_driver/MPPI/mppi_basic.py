@@ -71,8 +71,8 @@ class MPPIController(Node):
         self.w_heading  = 15.0  # Bám hướng tiếp tuyến
 
         # Bán kính an toàn của xe (m)
-        self.robot_radius   = 0.35
-        self.danger_radius  = 1.10  # Tăng lên 1.10m để phát hiện và phản ứng sớm hơn với chướng ngại vật
+        self.robot_radius   = 0.45  # Tăng lên 0.45m để xe tránh xa vật cản/viền thêm 10cm
+        self.danger_radius  = 1.20  # Tăng lên 1.20m để phát hiện và phản ứng sớm hơn với chướng ngại vật
 
         # Tốc độ mục tiêu lớn nhất trên đường thẳng (m/s)
         self.target_speed = 5.0  # Tăng tốc độ mục tiêu trên đường thẳng lên 5.0 m/s
@@ -702,22 +702,9 @@ class MPPIController(Node):
         opt_speed = float(self.nominal_control[0, 0])
         opt_steer = float(self.nominal_control[0, 1])
 
-        # ── Safe Stop Guard: Phanh khẩn cấp nếu cận kề vật cản mà không tìm thấy đường đi an toàn ──
+        # Lưu lại chi phí vật cản tốt nhất để điều tiết tốc độ cho chu kỳ sau
         best_idx = int(np.argmin(costs))
-        best_obs_cost = self._current_obs_cost[best_idx]
-        self.last_best_obs_cost = best_obs_cost
-        
-        # Ngưỡng khoảng cách dừng an toàn động dựa trên vận tốc hiện tại
-        stop_threshold = max(0.9, v_cur * 0.4 + 0.3)
-        if self.forward_min_obs_dist < stop_threshold and best_obs_cost >= 5.0:
-            self.get_logger().warn(
-                f"[SAFETY STOP] Cận kề vật cản và không tìm thấy đường đi an toàn! "
-                f"(forward_obs={self.forward_min_obs_dist:.2f}m, threshold={stop_threshold:.2f}m, best_obs_cost={best_obs_cost:.1f}) -> Phanh dừng xe và kích hoạt đi lùi.",
-                throttle_duration_sec=0.2
-            )
-            opt_speed = 0.0
-            self.nominal_control[:, 0] = 0.0
-            self.is_reversing = True
+        self.last_best_obs_cost = self._current_obs_cost[best_idx]
 
         # ── Receding horizon shift (warm-start) ─────────────────────
         # Dịch nominal_control 1 bước về trước

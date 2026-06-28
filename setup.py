@@ -40,7 +40,8 @@ setup(
             'mppi_basic = my_f1_driver.MPPI.mppi_basic:main',
             'mpc_from_real_900 = my_f1_driver.MPC.mpc_chuyen_doi_from_real:main',
             'PID_basic = my_f1_driver.PID_basic:main',
-            'mppi_nhat = my_f1_driver.MPPI.mppi_nhat:main'
+            'mppi_nhat = my_f1_driver.MPPI.mppi_nhat:main',
+            'mpc_adaptive = my_f1_driver.MPC.mpc_adaptive:main'
             
         ],
     },
